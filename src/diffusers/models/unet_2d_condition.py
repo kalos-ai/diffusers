@@ -734,6 +734,11 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         if hasattr(module, "gradient_checkpointing"):
             module.gradient_checkpointing = value
 
+    def set_block_cache(
+        self, block_cache
+    ):
+        self.block_cache = block_cache
+
     def enable_freeu(self, s1, s2, b1, b2):
         r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
 
@@ -980,6 +985,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         is_adapter = mid_block_additional_residual is None and down_block_additional_residuals is not None
 
         down_block_res_samples = (sample,)
+        blockidx = 0
         for downsample_block in self.down_blocks:
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
                 # For t2i-adapter CrossAttnDownBlock2D
@@ -987,15 +993,23 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 if is_adapter and len(down_block_additional_residuals) > 0:
                     additional_residuals["additional_residuals"] = down_block_additional_residuals.pop(0)
 
-                sample, res_samples = downsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    encoder_attention_mask=encoder_attention_mask,
-                    **additional_residuals,
-                )
+                downblockcache = None
+                if blockidx == 2 and hasattr(self, 'block_cache'):
+                        downblockcache = self.block_cache.read_downblock3_cache(timestep.item())
+                if downblockcache is None:
+                    sample, res_samples = downsample_block(
+                        hidden_states=sample,
+                        temb=emb,
+                        encoder_hidden_states=encoder_hidden_states,
+                        attention_mask=attention_mask,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        encoder_attention_mask=encoder_attention_mask,
+                        **additional_residuals,
+                    )
+                    if blockidx == 2 and hasattr(self, 'block_cache'):
+                        self.block_cache.set_downblock3_cache([sample, res_samples], timestep.item())
+                else:
+                    sample, res_samples = downblockcache
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb, scale=lora_scale)
 
@@ -1003,6 +1017,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     sample += down_block_additional_residuals.pop(0)
 
             down_block_res_samples += res_samples
+            blockidx += 1
 
         if is_controlnet:
             new_down_block_res_samples = ()
@@ -1017,14 +1032,18 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
         # 4. mid
         if self.mid_block is not None:
-            sample = self.mid_block(
-                sample,
-                emb,
-                encoder_hidden_states=encoder_hidden_states,
-                attention_mask=attention_mask,
-                cross_attention_kwargs=cross_attention_kwargs,
-                encoder_attention_mask=encoder_attention_mask,
-            )
+            midblockcache = None
+            if hasattr(self, 'block_cache'):
+                midblockcache = self.block_cache.read_midblock_cache(timestep.item())
+            if midblockcache is None:
+                sample = self.mid_block(
+                    sample,
+                    emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                    encoder_attention_mask=encoder_attention_mask,
+                )
             # To support T2I-Adapter-XL
             if (
                 is_adapter

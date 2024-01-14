@@ -1074,8 +1074,15 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
                     f"{self.__class__} has the config param `encoder_hid_dim_type` set to 'ip_image_proj' which requires the keyword argument `image_embeds` to be passed in  `added_conditions`"
                 )
             image_embeds = added_cond_kwargs.get("image_embeds")
-            image_embeds = self.encoder_hid_proj(image_embeds).to(encoder_hidden_states.dtype)
-            encoder_hidden_states = torch.cat([encoder_hidden_states, image_embeds], dim=1)
+            if isinstance(image_embeds, list):
+                image_embeds_hs_list = [encoder_hidden_states]
+                for _image_embeds in image_embeds:
+                    _image_embeds = self.encoder_hid_proj(_image_embeds).to(encoder_hidden_states.dtype)
+                    image_embeds_hs_list.append(_image_embeds)
+                encoder_hidden_states = torch.cat(image_embeds_hs_list, dim=1)
+            else:
+                image_embeds = self.encoder_hid_proj(image_embeds).to(encoder_hidden_states.dtype)
+                encoder_hidden_states = torch.cat([encoder_hidden_states, image_embeds], dim=1)
 
         # 2. pre-process
         sample = self.conv_in(sample)
